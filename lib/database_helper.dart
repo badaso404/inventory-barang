@@ -1,0 +1,569 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite/sqflite.dart';
+
+import 'models/barang.dart';
+import 'models/lokasi.dart';
+import 'models/transaksi_keluar.dart';
+import 'models/transaksi_masuk.dart';
+import 'services/data_refresh.dart';
+
+/// Singleton pengelola database SQLite lokal.
+///
+/// Semua operasi yang mengubah lebih dari satu tabel (barang masuk / keluar)
+/// dibungkus dalam satu DB transaction supaya konsisten (atomic).
+class DatabaseHelper {
+  DatabaseHelper._internal();
+  static final DatabaseHelper instance = DatabaseHelper._internal();
+
+  static const _dbName = 'stokbarang.db';
+  static const _dbVersion = 2;
+
+  Database? _db;
+
+  Future<Database> get database async {
+    return _db ??= await _open();
+  }
+
+  /// Override path database — hanya dipakai di test (mis. sqflite_common_ffi).
+  static String? debugDatabasePath;
+
+  Future<Database> _open() async {
+    final String path;
+    if (debugDatabasePath != null) {
+      path = debugDatabasePath!;
+    } else {
+      final dir = await getDatabasesPath();
+      path = p.join(dir, _dbName);
+    }
+    return openDatabase(
+      path,
+      version: _dbVersion,
+      onConfigure: _onConfigure,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+    );
+  }
+
+  /// Aktifkan enforcement foreign key (default SQLite mati).
+  Future<void> _onConfigure(Database db) async {
+    await db.execute('PRAGMA foreign_keys = ON');
+  }
+
+  /// Migrasi skema agar data lama tetap terpakai saat app di-update.
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // v2: tambah kolom foto barang.
+      await db.execute('ALTER TABLE barang ADD COLUMN foto_path TEXT');
+    }
+  }
+
+  Future<void> _onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        username      TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        nama_lengkap  TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT 'operator'
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE barang (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        kode_barang TEXT NOT NULL UNIQUE,
+        nama        TEXT NOT NULL,
+        merek       TEXT,
+        tipe        TEXT,
+        satuan      TEXT NOT NULL DEFAULT 'pcs',
+        stok_pusat  INTEGER NOT NULL DEFAULT 0,
+        foto_path   TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE lokasi (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        kode_lokasi TEXT NOT NULL UNIQUE,
+        nama        TEXT NOT NULL,
+        alamat      TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE stok_lokasi (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        barang_id INTEGER NOT NULL REFERENCES barang(id) ON DELETE CASCADE,
+        lokasi_id INTEGER NOT NULL REFERENCES lokasi(id) ON DELETE CASCADE,
+        jumlah    INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(barang_id, lokasi_id)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE transaksi_masuk (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        barang_id  INTEGER NOT NULL REFERENCES barang(id) ON DELETE CASCADE,
+        jumlah     INTEGER NOT NULL,
+        keterangan TEXT,
+        user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        tanggal    TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE transaksi_keluar (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        barang_id          INTEGER NOT NULL REFERENCES barang(id) ON DELETE CASCADE,
+        lokasi_id          INTEGER NOT NULL REFERENCES lokasi(id) ON DELETE CASCADE,
+        jumlah             INTEGER NOT NULL,
+        berita_acara_path  TEXT,
+        keterangan         TEXT,
+        user_id            INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        tanggal            TEXT NOT NULL
+      )
+    ''');
+
+    // User default untuk testing — login: admin / admin123
+    await db.insert('users', {
+      'username': 'admin',
+      'password_hash': hashPassword('admin123'),
+      'nama_lengkap': 'Administrator',
+      'role': 'admin',
+    });
+
+    // Contoh lokasi/UKPD tujuan distribusi (untuk testing barang keluar).
+    const sampleLokasi = [
+      {'kode_lokasi': 'UKPD-001', 'nama': 'Suku Dinas Jakarta Pusat', 'alamat': 'Jl. Merdeka No. 1'},
+      {'kode_lokasi': 'UKPD-002', 'nama': 'Suku Dinas Jakarta Selatan', 'alamat': 'Jl. Trunojoyo No. 2'},
+      {'kode_lokasi': 'UKPD-003', 'nama': 'Suku Dinas Jakarta Timur', 'alamat': 'Jl. Bekasi Timur No. 3'},
+    ];
+    for (final l in sampleLokasi) {
+      await db.insert('lokasi', l);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Password hashing
+  // ---------------------------------------------------------------------------
+
+  /// Hash password dengan SHA-256. Password TIDAK pernah disimpan plaintext.
+  static String hashPassword(String password) {
+    return sha256.convert(utf8.encode(password)).toString();
+  }
+
+  /// Buat user baru; password otomatis di-hash sebelum disimpan.
+  Future<int> createUser({
+    required String username,
+    required String password,
+    required String namaLengkap,
+    String role = 'operator',
+  }) async {
+    final db = await database;
+    return db.insert('users', {
+      'username': username,
+      'password_hash': hashPassword(password),
+      'nama_lengkap': namaLengkap,
+      'role': role,
+    });
+  }
+
+  /// Verifikasi login. Return baris user bila cocok, null bila gagal.
+  Future<Map<String, dynamic>?> login(String username, String password) async {
+    final db = await database;
+    final rows = await db.query(
+      'users',
+      where: 'username = ? AND password_hash = ?',
+      whereArgs: [username, hashPassword(password)],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Barang masuk
+  // ---------------------------------------------------------------------------
+
+  /// Catat barang masuk ke gudang pusat.
+  ///
+  /// Jika sudah ada barang dengan kombinasi nama + merek + tipe yang sama,
+  /// stok_pusat-nya ditambah. Jika belum ada, dibuat barang baru dengan
+  /// kode otomatis (BRG-0001, BRG-0002, ...).
+  ///
+  /// Return `id` barang (baru maupun yang di-update).
+  Future<int> barangMasuk({
+    required String nama,
+    String? merek,
+    String? tipe,
+    required int jumlah,
+    String satuan = 'pcs',
+    String? keterangan,
+    int? userId,
+    DateTime? tanggal,
+    String? fotoPath,
+  }) async {
+    if (jumlah <= 0) {
+      throw ArgumentError('Jumlah barang masuk harus lebih dari 0');
+    }
+    final tanggalIso = (tanggal ?? DateTime.now()).toIso8601String();
+
+    final db = await database;
+    final barangId = await db.transaction<int>((txn) async {
+      // Cari barang identik (perlakukan NULL merek/tipe seperti string kosong).
+      final existing = await txn.query(
+        'barang',
+        where:
+            "nama = ? AND IFNULL(merek,'') = IFNULL(?,'') AND IFNULL(tipe,'') = IFNULL(?,'')",
+        whereArgs: [nama, merek, tipe],
+        limit: 1,
+      );
+
+      final int barangId;
+      if (existing.isNotEmpty) {
+        barangId = existing.first['id'] as int;
+        await txn.rawUpdate(
+          'UPDATE barang SET stok_pusat = stok_pusat + ? WHERE id = ?',
+          [jumlah, barangId],
+        );
+        // Isi foto bila barang belum punya dan user melampirkan foto baru.
+        if (fotoPath != null && existing.first['foto_path'] == null) {
+          await txn.update(
+            'barang',
+            {'foto_path': fotoPath},
+            where: 'id = ?',
+            whereArgs: [barangId],
+          );
+        }
+      } else {
+        final kode = await _generateKodeBarang(txn);
+        barangId = await txn.insert('barang', {
+          'kode_barang': kode,
+          'nama': nama,
+          'merek': merek,
+          'tipe': tipe,
+          'satuan': satuan,
+          'stok_pusat': jumlah,
+          'foto_path': fotoPath,
+        });
+      }
+
+      await txn.insert('transaksi_masuk', {
+        'barang_id': barangId,
+        'jumlah': jumlah,
+        'keterangan': keterangan,
+        'user_id': userId,
+        'tanggal': tanggalIso,
+      });
+
+      return barangId;
+    });
+
+    DataRefresh.ping(); // beritahu layar lain agar reload
+    return barangId;
+  }
+
+  /// Generate kode barang berikutnya (BRG-0001) berdasarkan angka terbesar
+  /// yang sudah ada. Dijalankan di dalam transaction yang sama dengan insert.
+  Future<String> _generateKodeBarang(DatabaseExecutor txn) async {
+    final result = await txn.rawQuery(
+      "SELECT MAX(CAST(SUBSTR(kode_barang, 5) AS INTEGER)) AS maxnum "
+      "FROM barang WHERE kode_barang LIKE 'BRG-%'",
+    );
+    final maxNum = (result.first['maxnum'] as int?) ?? 0;
+    final next = maxNum + 1;
+    return 'BRG-${next.toString().padLeft(4, '0')}';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Barang keluar (distribusi)
+  // ---------------------------------------------------------------------------
+
+  /// Distribusikan barang dari gudang pusat ke sebuah lokasi/UKPD.
+  ///
+  /// Memvalidasi stok_pusat mencukupi. Bila cukup: stok_pusat berkurang,
+  /// stok_lokasi bertambah (upsert), lalu dicatat di transaksi_keluar.
+  ///
+  /// Return `false` bila stok tidak mencukupi (tidak ada perubahan data),
+  /// `true` bila berhasil.
+  Future<bool> barangKeluar({
+    required int barangId,
+    required int lokasiId,
+    required int jumlah,
+    String? beritaAcaraPath,
+    String? keterangan,
+    int? userId,
+    DateTime? tanggal,
+  }) async {
+    if (jumlah <= 0) {
+      throw ArgumentError('Jumlah barang keluar harus lebih dari 0');
+    }
+    final tanggalIso = (tanggal ?? DateTime.now()).toIso8601String();
+
+    final db = await database;
+    final ok = await db.transaction<bool>((txn) async {
+      final rows = await txn.query(
+        'barang',
+        columns: ['stok_pusat'],
+        where: 'id = ?',
+        whereArgs: [barangId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return false;
+
+      final stokPusat = rows.first['stok_pusat'] as int;
+      if (stokPusat < jumlah) {
+        return false; // stok tidak cukup — batalkan transaksi
+      }
+
+      // Kurangi stok pusat.
+      await txn.rawUpdate(
+        'UPDATE barang SET stok_pusat = stok_pusat - ? WHERE id = ?',
+        [jumlah, barangId],
+      );
+
+      // Upsert stok lokasi (tambah jika pasangan sudah ada).
+      await txn.rawInsert(
+        '''
+        INSERT INTO stok_lokasi (barang_id, lokasi_id, jumlah)
+        VALUES (?, ?, ?)
+        ON CONFLICT(barang_id, lokasi_id)
+        DO UPDATE SET jumlah = jumlah + excluded.jumlah
+        ''',
+        [barangId, lokasiId, jumlah],
+      );
+
+      await txn.insert('transaksi_keluar', {
+        'barang_id': barangId,
+        'lokasi_id': lokasiId,
+        'jumlah': jumlah,
+        'berita_acara_path': beritaAcaraPath,
+        'keterangan': keterangan,
+        'user_id': userId,
+        'tanggal': tanggalIso,
+      });
+
+      return true;
+    });
+
+    if (ok) DataRefresh.ping(); // stok & riwayat berubah
+    return ok;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Query / laporan
+  // ---------------------------------------------------------------------------
+
+  /// Semua barang beserta stok di gudang pusat.
+  Future<List<Barang>> getStokPusat() async {
+    final db = await database;
+    final rows = await db.query('barang', orderBy: 'nama COLLATE NOCASE ASC');
+    return rows.map(Barang.fromMap).toList();
+  }
+
+  /// Barang yang tersimpan di sebuah lokasi (jumlah > 0), lengkap dengan
+  /// data barangnya. Setiap map berisi field barang + `jumlah` di lokasi.
+  Future<List<Map<String, dynamic>>> getBarangDiLokasi(int lokasiId) async {
+    final db = await database;
+    return db.rawQuery(
+      '''
+      SELECT b.id, b.kode_barang, b.nama, b.merek, b.tipe, b.satuan,
+             sl.jumlah AS jumlah
+      FROM stok_lokasi sl
+      JOIN barang b ON b.id = sl.barang_id
+      WHERE sl.lokasi_id = ? AND sl.jumlah > 0
+      ORDER BY b.nama COLLATE NOCASE ASC
+      ''',
+      [lokasiId],
+    );
+  }
+
+  /// Riwayat gabungan barang masuk & keluar, terbaru di atas.
+  ///
+  /// Tiap baris punya field `tipe` ('masuk' | 'keluar'), `nama_barang`,
+  /// `nama_lokasi` (null untuk masuk), `jumlah`, `tanggal`, `keterangan`.
+  Future<List<Map<String, dynamic>>> getRiwayat({int? limit}) async {
+    final db = await database;
+    final limitClause = limit != null ? 'LIMIT $limit' : '';
+    return db.rawQuery(
+      '''
+      SELECT 'masuk' AS tipe, tm.id AS id, tm.jumlah AS jumlah,
+             tm.tanggal AS tanggal, tm.keterangan AS keterangan,
+             b.nama AS nama_barang, b.kode_barang AS kode_barang,
+             NULL AS nama_lokasi, NULL AS berita_acara_path
+      FROM transaksi_masuk tm
+      JOIN barang b ON b.id = tm.barang_id
+      UNION ALL
+      SELECT 'keluar' AS tipe, tk.id AS id, tk.jumlah AS jumlah,
+             tk.tanggal AS tanggal, tk.keterangan AS keterangan,
+             b.nama AS nama_barang, b.kode_barang AS kode_barang,
+             l.nama AS nama_lokasi, tk.berita_acara_path AS berita_acara_path
+      FROM transaksi_keluar tk
+      JOIN barang b ON b.id = tk.barang_id
+      JOIN lokasi l ON l.id = tk.lokasi_id
+      ORDER BY tanggal DESC
+      $limitClause
+      ''',
+    );
+  }
+
+  /// Ambil satu barang berdasarkan id.
+  Future<Barang?> getBarangById(int id) async {
+    final db = await database;
+    final rows = await db.query(
+      'barang',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : Barang.fromMap(rows.first);
+  }
+
+  /// Riwayat transaksi (masuk & keluar) untuk satu barang, terbaru di atas.
+  Future<List<Map<String, dynamic>>> getRiwayatBarang(int barangId) async {
+    final db = await database;
+    return db.rawQuery(
+      '''
+      SELECT 'masuk' AS tipe, tm.jumlah AS jumlah, tm.tanggal AS tanggal,
+             tm.keterangan AS keterangan, NULL AS nama_lokasi,
+             NULL AS berita_acara_path
+      FROM transaksi_masuk tm
+      WHERE tm.barang_id = ?
+      UNION ALL
+      SELECT 'keluar' AS tipe, tk.jumlah AS jumlah, tk.tanggal AS tanggal,
+             tk.keterangan AS keterangan, l.nama AS nama_lokasi,
+             tk.berita_acara_path AS berita_acara_path
+      FROM transaksi_keluar tk
+      JOIN lokasi l ON l.id = tk.lokasi_id
+      WHERE tk.barang_id = ?
+      ORDER BY tanggal DESC
+      ''',
+      [barangId, barangId],
+    );
+  }
+
+  /// Ringkasan untuk dashboard. `sejak` membatasi hitungan masuk/keluar ke
+  /// periode berjalan (mis. awal bulan); null = semua waktu.
+  Future<DashboardStats> getDashboardStats({DateTime? sejak}) async {
+    final db = await database;
+    final sejakIso = sejak?.toIso8601String();
+
+    final jenis = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM barang'),
+        ) ??
+        0;
+    final totalStok = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT IFNULL(SUM(stok_pusat), 0) FROM barang'),
+        ) ??
+        0;
+
+    final masukRows = await db.rawQuery(
+      'SELECT IFNULL(SUM(jumlah), 0) AS total FROM transaksi_masuk'
+      '${sejakIso != null ? ' WHERE tanggal >= ?' : ''}',
+      sejakIso != null ? [sejakIso] : null,
+    );
+    final keluarRows = await db.rawQuery(
+      'SELECT IFNULL(SUM(jumlah), 0) AS total FROM transaksi_keluar'
+      '${sejakIso != null ? ' WHERE tanggal >= ?' : ''}',
+      sejakIso != null ? [sejakIso] : null,
+    );
+
+    return DashboardStats(
+      jenisBarang: jenis,
+      totalStokPusat: totalStok,
+      totalMasuk: (masukRows.first['total'] as int?) ?? 0,
+      totalKeluar: (keluarRows.first['total'] as int?) ?? 0,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // CRUD lokasi (dipakai layar Wilayah/UKPD)
+  // ---------------------------------------------------------------------------
+
+  Future<int> insertLokasi(Lokasi lokasi) async {
+    final db = await database;
+    final id = await db.insert('lokasi', lokasi.toMap());
+    DataRefresh.ping();
+    return id;
+  }
+
+  Future<List<Lokasi>> getLokasi() async {
+    final db = await database;
+    final rows = await db.query('lokasi', orderBy: 'nama COLLATE NOCASE ASC');
+    return rows.map(Lokasi.fromMap).toList();
+  }
+
+  /// Jumlah jenis barang (baris stok_lokasi > 0) di sebuah lokasi.
+  Future<int> countBarangDiLokasi(int lokasiId) async {
+    final db = await database;
+    return Sqflite.firstIntValue(
+          await db.rawQuery(
+            'SELECT COUNT(*) FROM stok_lokasi WHERE lokasi_id = ? AND jumlah > 0',
+            [lokasiId],
+          ),
+        ) ??
+        0;
+  }
+
+  /// Kode lokasi berikutnya (UKPD-001) untuk mengisi form tambah lokasi.
+  Future<String> generateKodeLokasi() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      "SELECT MAX(CAST(SUBSTR(kode_lokasi, 6) AS INTEGER)) AS maxnum "
+      "FROM lokasi WHERE kode_lokasi LIKE 'UKPD-%'",
+    );
+    final maxNum = (result.first['maxnum'] as int?) ?? 0;
+    return 'UKPD-${(maxNum + 1).toString().padLeft(3, '0')}';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Akses transaksi (opsional, typed)
+  // ---------------------------------------------------------------------------
+
+  Future<List<TransaksiMasuk>> getTransaksiMasuk({int? barangId}) async {
+    final db = await database;
+    final rows = await db.query(
+      'transaksi_masuk',
+      where: barangId != null ? 'barang_id = ?' : null,
+      whereArgs: barangId != null ? [barangId] : null,
+      orderBy: 'tanggal DESC',
+    );
+    return rows.map(TransaksiMasuk.fromMap).toList();
+  }
+
+  Future<List<TransaksiKeluar>> getTransaksiKeluar({int? lokasiId}) async {
+    final db = await database;
+    final rows = await db.query(
+      'transaksi_keluar',
+      where: lokasiId != null ? 'lokasi_id = ?' : null,
+      whereArgs: lokasiId != null ? [lokasiId] : null,
+      orderBy: 'tanggal DESC',
+    );
+    return rows.map(TransaksiKeluar.fromMap).toList();
+  }
+
+  Future<void> close() async {
+    final db = _db;
+    if (db != null) {
+      await db.close();
+      _db = null;
+    }
+  }
+}
+
+/// Angka ringkasan untuk dashboard.
+class DashboardStats {
+  final int jenisBarang;
+  final int totalStokPusat;
+  final int totalMasuk;
+  final int totalKeluar;
+
+  const DashboardStats({
+    required this.jenisBarang,
+    required this.totalStokPusat,
+    required this.totalMasuk,
+    required this.totalKeluar,
+  });
+}
