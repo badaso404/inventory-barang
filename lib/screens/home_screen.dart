@@ -82,7 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Ringkasan bulan ${Format.tanggalOf(DateTime.now()).substring(3)}',
+              'Ringkasan bulan ${Format.bulanTahun(DateTime.now())}',
               style: TextStyle(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),

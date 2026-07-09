@@ -7,7 +7,16 @@ class Format {
     'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des',
   ];
 
+  static const bulanPanjang = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+  ];
+
   static String _pad(int n) => n.toString().padLeft(2, '0');
+
+  /// DateTime → "Juli 2026".
+  static String bulanTahun(DateTime d) =>
+      '${bulanPanjang[d.month - 1]} ${d.year}';
 
   /// ISO-8601 → "08 Jul 2026, 14:30". Kembalikan string asli bila gagal parse.
   static String tanggalJam(String iso) {
