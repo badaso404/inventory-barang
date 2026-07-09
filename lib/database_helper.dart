@@ -19,7 +19,42 @@ class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   static const _dbName = 'stokbarang.db';
-  static const _dbVersion = 2;
+  static const _dbVersion = 4;
+
+  /// Daftar Wilayah/Instansi/UKPD bawaan (Jakarta Barat).
+  static const presetLokasi = <String>[
+    'Badan',
+    'Inspektorat Pembantu Wilayah',
+    'Suku Badan Kepegawaian Daerah (SBKD)',
+    'Suku Badan Kesatuan Bangsa dan Politik (Kesbangpol)',
+    'Suku Badan Pendapatan Daerah (Bapenda)',
+    'Suku Badan Pengelolaan Aset Daerah (BPAD)',
+    'Suku Badan Pengelolaan Keuangan Daerah (BPKD)',
+    'Suku Badan Perencanaan Pembangunan Daerah (Bappeda)',
+    'Suku Dinas',
+    'Suku Dinas Bina Marga',
+    'Suku Dinas Kebudayaan',
+    'Suku Dinas Cipta Karya, Tata Ruang dan Pertanahan (CKTRP)',
+    'Suku Dinas Penanggulangan Kebakaran dan Penyelamatan (Gulkarmat)',
+    'Suku Dinas Kependudukan dan Pencatatan Sipil (Dukcapil)',
+    'Suku Dinas Kesehatan',
+    'Suku Dinas Ketahanan Pangan, Kelautan dan Pertanian (KPKP)',
+    'Suku Dinas Komunikasi, Informatika dan Statistik (Kominfotik)',
+    'Suku Dinas Lingkungan Hidup',
+    'Suku Dinas Tenaga Kerja, Transmigrasi dan Energi (Nakertransgi)',
+    'Suku Dinas Pariwisata dan Ekonomi Kreatif (Parekraf)',
+    'Suku Dinas Pemuda dan Olahraga',
+    'Suku Dinas Pendidikan Wilayah I',
+    'Suku Dinas Pendidikan Wilayah II',
+    'Suku Dinas Perhubungan',
+    'Suku Dinas Perpustakaan dan Kearsipan',
+    'Suku Dinas Pemberdayaan, Perlindungan Anak dan Pengendalian Penduduk (PPAPP)',
+    'Suku Dinas Perindustrian, Perdagangan, Koperasi, Usaha Kecil dan Menengah (PPKUKM)',
+    'Suku Dinas Perumahan Rakyat dan Kawasan Permukiman (PRKP)',
+    'Suku Dinas Sumber Daya Air (SDA)',
+    'Suku Dinas Sosial',
+    'Suku Dinas Pertamanan dan Hutan Kota',
+  ];
 
   Database? _db;
 
@@ -52,11 +87,33 @@ class DatabaseHelper {
     await db.execute('PRAGMA foreign_keys = ON');
   }
 
+  /// DDL tabel pengembalian barang (dari lokasi/UKPD kembali ke gudang pusat).
+  static const _ddlTransaksiKembali = '''
+    CREATE TABLE transaksi_kembali (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      barang_id          INTEGER NOT NULL REFERENCES barang(id) ON DELETE CASCADE,
+      lokasi_id          INTEGER NOT NULL REFERENCES lokasi(id) ON DELETE CASCADE,
+      jumlah             INTEGER NOT NULL,
+      berita_acara_path  TEXT,
+      keterangan         TEXT,
+      user_id            INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      tanggal            TEXT NOT NULL
+    )
+  ''';
+
   /// Migrasi skema agar data lama tetap terpakai saat app di-update.
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       // v2: tambah kolom foto barang.
       await db.execute('ALTER TABLE barang ADD COLUMN foto_path TEXT');
+    }
+    if (oldVersion < 3) {
+      // v3: sisipkan daftar Wilayah/UKPD bawaan.
+      await _seedPresetLokasi(db);
+    }
+    if (oldVersion < 4) {
+      // v4: tabel pengembalian barang.
+      await db.execute(_ddlTransaksiKembali);
     }
   }
 
@@ -127,6 +184,8 @@ class DatabaseHelper {
       )
     ''');
 
+    await db.execute(_ddlTransaksiKembali);
+
     // User default untuk testing — login: admin / admin123
     await db.insert('users', {
       'username': 'admin',
@@ -135,14 +194,36 @@ class DatabaseHelper {
       'role': 'admin',
     });
 
-    // Contoh lokasi/UKPD tujuan distribusi (untuk testing barang keluar).
-    const sampleLokasi = [
-      {'kode_lokasi': 'UKPD-001', 'nama': 'Suku Dinas Jakarta Pusat', 'alamat': 'Jl. Merdeka No. 1'},
-      {'kode_lokasi': 'UKPD-002', 'nama': 'Suku Dinas Jakarta Selatan', 'alamat': 'Jl. Trunojoyo No. 2'},
-      {'kode_lokasi': 'UKPD-003', 'nama': 'Suku Dinas Jakarta Timur', 'alamat': 'Jl. Bekasi Timur No. 3'},
-    ];
-    for (final l in sampleLokasi) {
-      await db.insert('lokasi', l);
+    // Daftar Wilayah/UKPD bawaan sebagai tujuan distribusi.
+    await _seedPresetLokasi(db);
+  }
+
+  /// Sisipkan preset lokasi/UKPD yang belum ada (berdasarkan nama), dengan
+  /// kode berurutan (UKPD-001, ...). Idempotent: aman dipanggil ulang saat
+  /// migrasi tanpa membuat duplikat.
+  Future<void> _seedPresetLokasi(DatabaseExecutor db) async {
+    // Angka kode tertinggi yang sudah ada, agar penomoran lanjut.
+    final maxNum = Sqflite.firstIntValue(await db.rawQuery(
+          "SELECT MAX(CAST(SUBSTR(kode_lokasi, 6) AS INTEGER)) "
+          "FROM lokasi WHERE kode_lokasi LIKE 'UKPD-%'",
+        )) ??
+        0;
+    var next = maxNum;
+
+    for (final nama in presetLokasi) {
+      final ada = Sqflite.firstIntValue(await db.rawQuery(
+            'SELECT COUNT(*) FROM lokasi WHERE nama = ?',
+            [nama],
+          )) ??
+          0;
+      if (ada > 0) continue; // sudah ada, lewati
+
+      next++;
+      await db.insert('lokasi', {
+        'kode_lokasi': 'UKPD-${next.toString().padLeft(3, '0')}',
+        'nama': nama,
+        'alamat': null,
+      });
     }
   }
 
@@ -181,6 +262,31 @@ class DatabaseHelper {
       limit: 1,
     );
     return rows.isEmpty ? null : rows.first;
+  }
+
+  /// Ganti password user setelah memverifikasi password lama.
+  /// Return `false` bila password lama salah / user tidak ditemukan.
+  Future<bool> changePassword({
+    required int userId,
+    required String oldPassword,
+    required String newPassword,
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'users',
+      where: 'id = ? AND password_hash = ?',
+      whereArgs: [userId, hashPassword(oldPassword)],
+      limit: 1,
+    );
+    if (rows.isEmpty) return false;
+
+    await db.update(
+      'users',
+      {'password_hash': hashPassword(newPassword)},
+      where: 'id = ?',
+      whereArgs: [userId],
+    );
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -353,6 +459,78 @@ class DatabaseHelper {
   }
 
   // ---------------------------------------------------------------------------
+  // Barang kembali (retur dari lokasi ke gudang pusat)
+  // ---------------------------------------------------------------------------
+
+  /// Kembalikan barang dari sebuah lokasi/UKPD ke gudang pusat.
+  ///
+  /// Kebalikan dari [barangKeluar]: memvalidasi stok di lokasi mencukupi,
+  /// lalu stok_lokasi berkurang, stok_pusat bertambah, dan dicatat di
+  /// transaksi_kembali.
+  ///
+  /// Return `false` bila stok di lokasi tidak mencukupi (tanpa perubahan data),
+  /// `true` bila berhasil.
+  Future<bool> barangKembali({
+    required int barangId,
+    required int lokasiId,
+    required int jumlah,
+    String? beritaAcaraPath,
+    String? keterangan,
+    int? userId,
+    DateTime? tanggal,
+  }) async {
+    if (jumlah <= 0) {
+      throw ArgumentError('Jumlah barang kembali harus lebih dari 0');
+    }
+    final tanggalIso = (tanggal ?? DateTime.now()).toIso8601String();
+
+    final db = await database;
+    final ok = await db.transaction<bool>((txn) async {
+      final rows = await txn.query(
+        'stok_lokasi',
+        columns: ['jumlah'],
+        where: 'barang_id = ? AND lokasi_id = ?',
+        whereArgs: [barangId, lokasiId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return false;
+
+      final stokLokasi = rows.first['jumlah'] as int;
+      if (stokLokasi < jumlah) {
+        return false; // stok di lokasi tidak cukup — batalkan
+      }
+
+      // Kurangi stok di lokasi.
+      await txn.rawUpdate(
+        'UPDATE stok_lokasi SET jumlah = jumlah - ? '
+        'WHERE barang_id = ? AND lokasi_id = ?',
+        [jumlah, barangId, lokasiId],
+      );
+
+      // Tambah kembali ke stok pusat.
+      await txn.rawUpdate(
+        'UPDATE barang SET stok_pusat = stok_pusat + ? WHERE id = ?',
+        [jumlah, barangId],
+      );
+
+      await txn.insert('transaksi_kembali', {
+        'barang_id': barangId,
+        'lokasi_id': lokasiId,
+        'jumlah': jumlah,
+        'berita_acara_path': beritaAcaraPath,
+        'keterangan': keterangan,
+        'user_id': userId,
+        'tanggal': tanggalIso,
+      });
+
+      return true;
+    });
+
+    if (ok) DataRefresh.ping();
+    return ok;
+  }
+
+  // ---------------------------------------------------------------------------
   // Query / laporan
   // ---------------------------------------------------------------------------
 
@@ -380,10 +558,11 @@ class DatabaseHelper {
     );
   }
 
-  /// Riwayat gabungan barang masuk & keluar, terbaru di atas.
+  /// Riwayat gabungan barang masuk, keluar & kembali, terbaru di atas.
   ///
-  /// Tiap baris punya field `tipe` ('masuk' | 'keluar'), `nama_barang`,
-  /// `nama_lokasi` (null untuk masuk), `jumlah`, `tanggal`, `keterangan`.
+  /// Tiap baris punya field `tipe` ('masuk' | 'keluar' | 'kembali'),
+  /// `nama_barang`, `nama_lokasi` (null untuk masuk), `jumlah`, `tanggal`,
+  /// `keterangan`, `berita_acara_path`.
   Future<List<Map<String, dynamic>>> getRiwayat({int? limit}) async {
     final db = await database;
     final limitClause = limit != null ? 'LIMIT $limit' : '';
@@ -403,6 +582,14 @@ class DatabaseHelper {
       FROM transaksi_keluar tk
       JOIN barang b ON b.id = tk.barang_id
       JOIN lokasi l ON l.id = tk.lokasi_id
+      UNION ALL
+      SELECT 'kembali' AS tipe, tkb.id AS id, tkb.jumlah AS jumlah,
+             tkb.tanggal AS tanggal, tkb.keterangan AS keterangan,
+             b.nama AS nama_barang, b.kode_barang AS kode_barang,
+             l.nama AS nama_lokasi, tkb.berita_acara_path AS berita_acara_path
+      FROM transaksi_kembali tkb
+      JOIN barang b ON b.id = tkb.barang_id
+      JOIN lokasi l ON l.id = tkb.lokasi_id
       ORDER BY tanggal DESC
       $limitClause
       ''',
@@ -421,7 +608,7 @@ class DatabaseHelper {
     return rows.isEmpty ? null : Barang.fromMap(rows.first);
   }
 
-  /// Riwayat transaksi (masuk & keluar) untuk satu barang, terbaru di atas.
+  /// Riwayat transaksi (masuk, keluar & kembali) untuk satu barang.
   Future<List<Map<String, dynamic>>> getRiwayatBarang(int barangId) async {
     final db = await database;
     return db.rawQuery(
@@ -438,9 +625,16 @@ class DatabaseHelper {
       FROM transaksi_keluar tk
       JOIN lokasi l ON l.id = tk.lokasi_id
       WHERE tk.barang_id = ?
+      UNION ALL
+      SELECT 'kembali' AS tipe, tkb.jumlah AS jumlah, tkb.tanggal AS tanggal,
+             tkb.keterangan AS keterangan, l.nama AS nama_lokasi,
+             tkb.berita_acara_path AS berita_acara_path
+      FROM transaksi_kembali tkb
+      JOIN lokasi l ON l.id = tkb.lokasi_id
+      WHERE tkb.barang_id = ?
       ORDER BY tanggal DESC
       ''',
-      [barangId, barangId],
+      [barangId, barangId, barangId],
     );
   }
 
@@ -469,12 +663,18 @@ class DatabaseHelper {
       '${sejakIso != null ? ' WHERE tanggal >= ?' : ''}',
       sejakIso != null ? [sejakIso] : null,
     );
+    final kembaliRows = await db.rawQuery(
+      'SELECT IFNULL(SUM(jumlah), 0) AS total FROM transaksi_kembali'
+      '${sejakIso != null ? ' WHERE tanggal >= ?' : ''}',
+      sejakIso != null ? [sejakIso] : null,
+    );
 
     return DashboardStats(
       jenisBarang: jenis,
       totalStokPusat: totalStok,
-      totalMasuk: (masukRows.first['total'] as int?) ?? 0,
-      totalKeluar: (keluarRows.first['total'] as int?) ?? 0,
+      totalMasuk: (masukRows.first['total'] as num?)?.toInt() ?? 0,
+      totalKeluar: (keluarRows.first['total'] as num?)?.toInt() ?? 0,
+      totalKembali: (kembaliRows.first['total'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -559,11 +759,13 @@ class DashboardStats {
   final int totalStokPusat;
   final int totalMasuk;
   final int totalKeluar;
+  final int totalKembali;
 
   const DashboardStats({
     required this.jenisBarang,
     required this.totalStokPusat,
     required this.totalMasuk,
     required this.totalKeluar,
+    required this.totalKembali,
   });
 }

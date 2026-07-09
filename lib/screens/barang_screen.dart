@@ -8,6 +8,7 @@ import '../models/barang.dart';
 import '../services/data_refresh.dart';
 import '../widgets/empty_state.dart';
 import 'barang_detail_screen.dart';
+import 'barang_kembali_screen.dart';
 import 'barang_keluar_screen.dart';
 import 'barang_masuk_screen.dart';
 
@@ -103,17 +104,26 @@ class _BarangScreenState extends State<BarangScreen> {
             child: _ActionButton(
               icon: Icons.add_box_outlined,
               color: AppTheme.masuk,
-              label: 'Barang Masuk',
+              label: 'Masuk',
               onTap: () => _openForm(const BarangMasukScreen()),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: _ActionButton(
               icon: Icons.local_shipping_outlined,
               color: AppTheme.keluar,
-              label: 'Barang Keluar',
+              label: 'Keluar',
               onTap: () => _openForm(const BarangKeluarScreen()),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _ActionButton(
+              icon: Icons.keyboard_return,
+              color: AppTheme.kembali,
+              label: 'Kembali',
+              onTap: () => _openForm(const BarangKembaliScreen()),
             ),
           ),
         ],

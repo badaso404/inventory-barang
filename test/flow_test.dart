@@ -126,5 +126,42 @@ void main() {
     expect(stats.totalStokPusat, 100);
     expect(stats.totalMasuk, 150); // 100 + 50
     expect(stats.totalKeluar, 50); // 40 + 10
+
+    // 8. Barang kembali (retur) — kebalikan dari keluar.
+    // Saat ini: stok pusat 100, stok lokasi 50.
+
+    // Tolak bila melebihi stok di lokasi.
+    final tolakKembali = await db.barangKembali(
+      barangId: barangId,
+      lokasiId: lokasiId,
+      jumlah: 999,
+      userId: userId,
+    );
+    expect(tolakKembali, isFalse);
+    expect(diLokasi2.first['jumlah'], 50); // snapshot lama tak berubah
+    expect((await db.getBarangById(barangId))!.stokPusat, 100);
+
+    // Kembalikan 20 → stok lokasi 30, stok pusat 120.
+    final okKembali = await db.barangKembali(
+      barangId: barangId,
+      lokasiId: lokasiId,
+      jumlah: 20,
+      keterangan: 'Sisa tidak terpakai',
+      userId: userId,
+    );
+    expect(okKembali, isTrue);
+    expect((await db.getBarangById(barangId))!.stokPusat, 120);
+    expect((await db.getBarangDiLokasi(lokasiId)).first['jumlah'], 30);
+
+    // Riwayat kini 2 masuk + 2 keluar + 1 kembali = 5.
+    final riwayat2 = await db.getRiwayat();
+    expect(riwayat2.length, 5);
+    expect(riwayat2.where((r) => r['tipe'] == 'kembali').length, 1);
+    expect((await db.getRiwayatBarang(barangId)).length, 5);
+
+    // Dashboard mencatat total kembali.
+    final stats2 = await db.getDashboardStats();
+    expect(stats2.totalStokPusat, 120);
+    expect(stats2.totalKembali, 20);
   });
 }

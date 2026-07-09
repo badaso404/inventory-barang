@@ -7,6 +7,7 @@ import '../services/session_manager.dart';
 import '../utils/format.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/riwayat_tile.dart';
+import 'barang_kembali_screen.dart';
 import 'barang_keluar_screen.dart';
 import 'barang_masuk_screen.dart';
 import 'wilayah_screen.dart';
@@ -94,7 +95,7 @@ class _HomeScreenState extends State<HomeScreen> {
             physics: const NeverScrollableScrollPhysics(),
             mainAxisSpacing: 12,
             crossAxisSpacing: 12,
-            childAspectRatio: 1.5,
+            childAspectRatio: 1.6,
             children: [
               _StatCard(
                 icon: Icons.category_outlined,
@@ -108,19 +109,41 @@ class _HomeScreenState extends State<HomeScreen> {
                 label: 'Total Stok Pusat',
                 value: '${s.totalStokPusat}',
               ),
-              _StatCard(
-                icon: Icons.arrow_downward,
-                color: AppTheme.masuk,
-                label: 'Masuk (bln ini)',
-                value: '${s.totalMasuk}',
-              ),
-              _StatCard(
-                icon: Icons.arrow_upward,
-                color: AppTheme.keluar,
-                label: 'Keluar (bln ini)',
-                value: '${s.totalKeluar}',
-              ),
             ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 96,
+            child: Row(
+              children: [
+                Expanded(
+                  child: _StatCard(
+                    icon: Icons.arrow_downward,
+                    color: AppTheme.masuk,
+                    label: 'Masuk',
+                    value: '${s.totalMasuk}',
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StatCard(
+                    icon: Icons.arrow_upward,
+                    color: AppTheme.keluar,
+                    label: 'Keluar',
+                    value: '${s.totalKeluar}',
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StatCard(
+                    icon: Icons.keyboard_return,
+                    color: AppTheme.kembali,
+                    label: 'Kembali',
+                    value: '${s.totalKembali}',
+                  ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 24),
           Text(
@@ -144,6 +167,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: AppTheme.keluar,
                 label: 'Keluar',
                 onTap: () => _openAndRefresh(const BarangKeluarScreen()),
+              ),
+              _Shortcut(
+                icon: Icons.keyboard_return,
+                color: AppTheme.kembali,
+                label: 'Kembali',
+                onTap: () => _openAndRefresh(const BarangKembaliScreen()),
               ),
               _Shortcut(
                 icon: Icons.location_city_outlined,

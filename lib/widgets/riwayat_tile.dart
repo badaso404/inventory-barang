@@ -24,25 +24,52 @@ class RiwayatTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isMasuk = row['tipe'] == 'masuk';
-    final jumlah = row['jumlah'] as int;
+    final tipe = row['tipe'] as String;
+    final isMasuk = tipe == 'masuk';
+    final isKeluar = tipe == 'keluar';
+    final isKembali = tipe == 'kembali';
+    final jumlah = (row['jumlah'] as num?)?.toInt() ?? 0;
     final namaBarang = row['nama_barang'] as String?;
     final namaLokasi = row['nama_lokasi'] as String?;
     final keterangan = row['keterangan'] as String?;
     final beritaAcara = row['berita_acara_path'] as String?;
     final hasBeritaAcara = beritaAcara != null && beritaAcara.isNotEmpty;
 
-    final color = isMasuk ? AppTheme.masuk : AppTheme.keluar;
+    // Stok pusat bertambah untuk masuk & kembali, berkurang untuk keluar.
+    final naik = isMasuk || isKembali;
 
-    final String title;
-    if (showBarangName && namaBarang != null) {
-      title = namaBarang;
+    final Color color;
+    final IconData icon;
+    final String tipeLabel;
+    if (isMasuk) {
+      color = AppTheme.masuk;
+      icon = Icons.arrow_downward;
+      tipeLabel = 'Barang Masuk';
+    } else if (isKeluar) {
+      color = AppTheme.keluar;
+      icon = Icons.arrow_upward;
+      tipeLabel = 'Barang Keluar';
     } else {
-      title = isMasuk ? 'Barang Masuk' : 'Barang Keluar';
+      color = AppTheme.kembali;
+      icon = Icons.keyboard_return;
+      tipeLabel = 'Barang Kembali';
+    }
+
+    final title = (showBarangName && namaBarang != null)
+        ? namaBarang
+        : tipeLabel;
+
+    final String lokasiLine;
+    if (isMasuk) {
+      lokasiLine = 'Masuk ke gudang pusat';
+    } else if (isKeluar) {
+      lokasiLine = '→ ${namaLokasi ?? '-'}';
+    } else {
+      lokasiLine = '← kembali dari ${namaLokasi ?? '-'}';
     }
 
     final subtitleParts = <String>[
-      if (isMasuk) 'Masuk ke gudang pusat' else '→ ${namaLokasi ?? '-'}',
+      lokasiLine,
       Format.tanggalJam(row['tanggal'] as String),
       if (keterangan != null && keterangan.isNotEmpty) keterangan,
     ];
@@ -54,10 +81,7 @@ class RiwayatTile extends StatelessWidget {
           : null,
       leading: CircleAvatar(
         backgroundColor: color.withValues(alpha: 0.14),
-        child: Icon(
-          isMasuk ? Icons.arrow_downward : Icons.arrow_upward,
-          color: color,
-        ),
+        child: Icon(icon, color: color),
       ),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Column(
@@ -87,7 +111,7 @@ class RiwayatTile extends StatelessWidget {
       ),
       isThreeLine: subtitleParts.length > 2,
       trailing: Text(
-        '${isMasuk ? '+' : '-'}$jumlah',
+        '${naik ? '+' : '-'}$jumlah',
         style: TextStyle(
           color: color,
           fontWeight: FontWeight.bold,

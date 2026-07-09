@@ -13,6 +13,7 @@ class AppTheme {
   /// Warna semantik transaksi, dipakai konsisten di seluruh app.
   static const Color masuk = Color(0xFF2E7D32); // hijau — barang masuk
   static const Color keluar = brandOrange; // oranye — barang keluar
+  static const Color kembali = Color(0xFF1565C0); // biru — barang kembali
 
   static ThemeData get light {
     // Pakai palet Material 3 dari seed oranye, tapi paksa primary tetap
