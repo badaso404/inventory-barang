@@ -19,11 +19,18 @@ class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   static const _dbName = 'stokbarang.db';
-  static const _dbVersion = 4;
+  static const _dbVersion = 5;
+
+  /// Nama preset lama yang terlalu umum → nama barunya (dipakai migrasi v5).
+  /// Di-rename, bukan dihapus, supaya riwayat transaksi ke lokasi itu tetap utuh.
+  static const _renameLokasiV5 = <String, String>{
+    'Badan': 'Badan Kepegawaian Daerah (BKD)',
+    'Suku Dinas': 'Suku Dinas Dishub',
+  };
 
   /// Daftar Wilayah/Instansi/UKPD bawaan (Jakarta Barat).
   static const presetLokasi = <String>[
-    'Badan',
+    'Badan Kepegawaian Daerah (BKD)',
     'Inspektorat Pembantu Wilayah',
     'Suku Badan Kepegawaian Daerah (SBKD)',
     'Suku Badan Kesatuan Bangsa dan Politik (Kesbangpol)',
@@ -31,7 +38,7 @@ class DatabaseHelper {
     'Suku Badan Pengelolaan Aset Daerah (BPAD)',
     'Suku Badan Pengelolaan Keuangan Daerah (BPKD)',
     'Suku Badan Perencanaan Pembangunan Daerah (Bappeda)',
-    'Suku Dinas',
+    'Suku Dinas Dishub',
     'Suku Dinas Bina Marga',
     'Suku Dinas Kebudayaan',
     'Suku Dinas Cipta Karya, Tata Ruang dan Pertanahan (CKTRP)',
@@ -114,6 +121,21 @@ class DatabaseHelper {
     if (oldVersion < 4) {
       // v4: tabel pengembalian barang.
       await db.execute(_ddlTransaksiKembali);
+    }
+    if (oldVersion < 5) {
+      // v5: perjelas nama preset lokasi yang terlalu umum ('Badan',
+      // 'Suku Dinas'). Sengaja di-rename, bukan dihapus, agar transaksi yang
+      // menunjuk ke lokasi tersebut tidak ikut terhapus oleh ON DELETE CASCADE.
+      for (final e in _renameLokasiV5.entries) {
+        await db.update(
+          'lokasi',
+          {'nama': e.value},
+          where: 'nama = ?',
+          whereArgs: [e.key],
+        );
+      }
+      // Sisipkan preset yang belum ada (mis. lokasi baru di daftar).
+      await _seedPresetLokasi(db);
     }
   }
 
@@ -203,18 +225,23 @@ class DatabaseHelper {
   /// migrasi tanpa membuat duplikat.
   Future<void> _seedPresetLokasi(DatabaseExecutor db) async {
     // Angka kode tertinggi yang sudah ada, agar penomoran lanjut.
-    final maxNum = Sqflite.firstIntValue(await db.rawQuery(
-          "SELECT MAX(CAST(SUBSTR(kode_lokasi, 6) AS INTEGER)) "
-          "FROM lokasi WHERE kode_lokasi LIKE 'UKPD-%'",
-        )) ??
+    final maxNum =
+        Sqflite.firstIntValue(
+          await db.rawQuery(
+            "SELECT MAX(CAST(SUBSTR(kode_lokasi, 6) AS INTEGER)) "
+            "FROM lokasi WHERE kode_lokasi LIKE 'UKPD-%'",
+          ),
+        ) ??
         0;
     var next = maxNum;
 
     for (final nama in presetLokasi) {
-      final ada = Sqflite.firstIntValue(await db.rawQuery(
-            'SELECT COUNT(*) FROM lokasi WHERE nama = ?',
-            [nama],
-          )) ??
+      final ada =
+          Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM lokasi WHERE nama = ?', [
+              nama,
+            ]),
+          ) ??
           0;
       if (ada > 0) continue; // sudah ada, lewati
 
@@ -556,7 +583,8 @@ class DatabaseHelper {
     final kembar = await db.query(
       'barang',
       columns: ['id'],
-      where: "id != ? AND nama = ? "
+      where:
+          "id != ? AND nama = ? "
           "AND IFNULL(merek,'') = IFNULL(?,'') AND IFNULL(tipe,'') = IFNULL(?,'')",
       whereArgs: [id, nama, merek, tipe],
       limit: 1,
@@ -616,8 +644,7 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> getRiwayat({int? limit}) async {
     final db = await database;
     final limitClause = limit != null ? 'LIMIT $limit' : '';
-    return db.rawQuery(
-      '''
+    return db.rawQuery('''
       SELECT 'masuk' AS tipe, tm.id AS id, tm.jumlah AS jumlah,
              tm.tanggal AS tanggal, tm.keterangan AS keterangan,
              b.nama AS nama_barang, b.kode_barang AS kode_barang,
@@ -642,8 +669,7 @@ class DatabaseHelper {
       JOIN lokasi l ON l.id = tkb.lokasi_id
       ORDER BY tanggal DESC
       $limitClause
-      ''',
-    );
+      ''');
   }
 
   /// Ambil satu barang berdasarkan id.
@@ -694,11 +720,13 @@ class DatabaseHelper {
     final db = await database;
     final sejakIso = sejak?.toIso8601String();
 
-    final jenis = Sqflite.firstIntValue(
+    final jenis =
+        Sqflite.firstIntValue(
           await db.rawQuery('SELECT COUNT(*) FROM barang'),
         ) ??
         0;
-    final totalStok = Sqflite.firstIntValue(
+    final totalStok =
+        Sqflite.firstIntValue(
           await db.rawQuery('SELECT IFNULL(SUM(stok_pusat), 0) FROM barang'),
         ) ??
         0;
