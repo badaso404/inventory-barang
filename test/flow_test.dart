@@ -163,5 +163,45 @@ void main() {
     final stats2 = await db.getDashboardStats();
     expect(stats2.totalStokPusat, 120);
     expect(stats2.totalKembali, 20);
+
+    // 9. Edit barang — perbaiki data deskriptif tanpa mengubah stok/riwayat.
+    final okEdit = await db.updateBarang(
+      id: barangId,
+      nama: 'Kertas A4 80gsm',
+      merek: 'Sinar Dunia',
+      tipe: '80gsm',
+      satuan: 'rim',
+      fotoPath: '/foto_barang/brg_baru.jpg',
+    );
+    expect(okEdit, isTrue);
+
+    final diedit = await db.getBarangById(barangId);
+    expect(diedit!.nama, 'Kertas A4 80gsm');
+    expect(diedit.tipe, '80gsm');
+    expect(diedit.fotoPath, '/foto_barang/brg_baru.jpg');
+    expect(diedit.kodeBarang, 'BRG-0001', reason: 'kode barang tidak berubah');
+    expect(diedit.stokPusat, 120, reason: 'stok tidak boleh ikut berubah');
+    expect((await db.getRiwayatBarang(barangId)).length, 5,
+        reason: 'riwayat tetap utuh setelah edit');
+
+    // Edit ditolak bila jadi kembar dengan barang lain (nama+merek+tipe sama),
+    // karena kombinasi itu dipakai barangMasuk untuk menggabungkan stok.
+    final barangLain = await db.barangMasuk(
+      nama: 'Pulpen',
+      merek: 'Standard',
+      tipe: 'AE7',
+      jumlah: 10,
+      userId: userId,
+    );
+    final okKembar = await db.updateBarang(
+      id: barangLain,
+      nama: 'Kertas A4 80gsm',
+      merek: 'Sinar Dunia',
+      tipe: '80gsm',
+      satuan: 'rim',
+    );
+    expect(okKembar, isFalse);
+    expect((await db.getBarangById(barangLain))!.nama, 'Pulpen',
+        reason: 'data tidak berubah saat edit ditolak');
   });
 }

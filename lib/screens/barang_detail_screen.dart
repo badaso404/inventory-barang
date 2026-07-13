@@ -6,6 +6,7 @@ import '../database_helper.dart';
 import '../models/barang.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/riwayat_tile.dart';
+import 'barang_edit_screen.dart';
 
 /// Detail satu barang + riwayat transaksinya (masuk & keluar).
 class BarangDetailScreen extends StatefulWidget {
@@ -40,11 +41,29 @@ class _BarangDetailScreenState extends State<BarangDetailScreen> {
     });
   }
 
+  /// Buka form edit; kalau tersimpan, muat ulang agar data baru tampil.
+  Future<void> _openEdit(Barang barang) async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => BarangEditScreen(barang: barang)),
+    );
+    if (saved == true) _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     final barang = _barang;
     return Scaffold(
-      appBar: AppBar(title: Text(barang?.nama ?? 'Detail Barang')),
+      appBar: AppBar(
+        title: Text(barang?.nama ?? 'Detail Barang'),
+        actions: [
+          if (barang != null)
+            IconButton(
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: 'Edit barang',
+              onPressed: () => _openEdit(barang),
+            ),
+        ],
+      ),
       body: _loading
           ? const LoadingView()
           : barang == null

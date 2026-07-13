@@ -531,6 +531,56 @@ class DatabaseHelper {
   }
 
   // ---------------------------------------------------------------------------
+  // Edit barang
+  // ---------------------------------------------------------------------------
+
+  /// Perbaiki data deskriptif barang (nama, merek, tipe, satuan, foto).
+  ///
+  /// Sengaja TIDAK menyentuh `stok_pusat` maupun riwayat transaksi: stok hanya
+  /// boleh berubah lewat barangMasuk/Keluar/Kembali supaya tetap bisa
+  /// ditelusuri dari riwayat.
+  ///
+  /// Return `false` bila sudah ada barang LAIN dengan kombinasi nama + merek +
+  /// tipe yang sama — kombinasi itu dipakai [barangMasuk] untuk menggabungkan
+  /// stok, jadi tidak boleh kembar.
+  Future<bool> updateBarang({
+    required int id,
+    required String nama,
+    String? merek,
+    String? tipe,
+    required String satuan,
+    String? fotoPath,
+  }) async {
+    final db = await database;
+
+    final kembar = await db.query(
+      'barang',
+      columns: ['id'],
+      where: "id != ? AND nama = ? "
+          "AND IFNULL(merek,'') = IFNULL(?,'') AND IFNULL(tipe,'') = IFNULL(?,'')",
+      whereArgs: [id, nama, merek, tipe],
+      limit: 1,
+    );
+    if (kembar.isNotEmpty) return false;
+
+    await db.update(
+      'barang',
+      {
+        'nama': nama,
+        'merek': merek,
+        'tipe': tipe,
+        'satuan': satuan,
+        'foto_path': fotoPath,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    DataRefresh.ping();
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
   // Query / laporan
   // ---------------------------------------------------------------------------
 
